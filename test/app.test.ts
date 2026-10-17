@@ -221,6 +221,43 @@ describe("ghcr-webhook-router", () => {
     );
   });
 
+  it("dispatches successfully for registry_package event with registry_package field and CONTAINER type", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+    const app = createApp(baseConfig, mockFetch as unknown as typeof fetch);
+    const body = JSON.stringify({
+      action: "published",
+      registry_package: {
+        name: "kgtkr.net",
+        package_type: "CONTAINER",
+        owner: { login: "kgtkr" },
+        package_version: {
+          version: "sha256:abcdef",
+          container_metadata: {
+            tag: { name: "20261017-8d3e086" },
+          },
+        },
+      },
+    });
+    const signature = await sign(secret, body);
+
+    const res = await app.request("/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "registry_package",
+        "content-type": "application/json",
+      },
+      body,
+    });
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as RouterResult;
+    expect(data.dispatched).toBe(true);
+    expect(data.image).toBe("ghcr.io/kgtkr/kgtkr.net");
+    expect(data.tag).toBe("20261017-8d3e086");
+  });
+
   it("debounces rapid duplicate pushes for the same image", async () => {
     const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 

@@ -65,7 +65,7 @@ export async function processWebhook(
     return { dispatched: false, message: "Missing package payload" };
   }
 
-  if (pkg.package_type !== "container") {
+  if (pkg.package_type?.toLowerCase() !== "container") {
     return {
       dispatched: false,
       message: `Ignored package_type: ${pkg.package_type}`,
