@@ -58,7 +58,7 @@ export async function processWebhook(
     return { dispatched: false, message: "Pong" };
   }
 
-  if (eventHeader !== "package") {
+  if (eventHeader !== "package" && eventHeader !== "registry_package") {
     return { dispatched: false, message: `Ignored event: ${eventHeader}` };
   }
 
