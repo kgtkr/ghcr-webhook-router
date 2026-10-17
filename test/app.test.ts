@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import crypto from "node:crypto";
 import { createApp } from "../src/app.ts";
 import type { AppConfig } from "../src/config.ts";
-import { clearDebounceCache } from "../src/router.ts";
+import { clearDebounceCache, type RouterResult } from "../src/router.ts";
 import { clearTokenCache } from "../src/auth.ts";
 
 function sign(body: string, secret: string): string {
@@ -95,7 +95,7 @@ describe("ghcr-webhook-router", () => {
       body,
     });
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as RouterResult;
     expect(data.dispatched).toBe(false);
     expect(data.message).toContain("Ignored package_type");
   });
@@ -126,7 +126,7 @@ describe("ghcr-webhook-router", () => {
       body,
     });
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as RouterResult;
     expect(data.dispatched).toBe(false);
     expect(data.message).toBe("Untagged manifest, ignored");
   });
@@ -159,7 +159,7 @@ describe("ghcr-webhook-router", () => {
       body,
     });
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as RouterResult;
     expect(data.dispatched).toBe(false);
     expect(data.message).toContain("TAG_EXCLUDE_REGEX");
   });
@@ -199,12 +199,12 @@ describe("ghcr-webhook-router", () => {
     });
 
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as RouterResult;
     expect(data.dispatched).toBe(true);
     expect(data.image).toBe("ghcr.io/kgtkr/kgtkr.net");
     expect(data.tag).toBe("20261017-8d3e086");
     expect(data.targets).toHaveLength(1);
-    expect(data.targets[0]).toEqual({
+    expect(data.targets![0]).toEqual({
       repo: "kgtkr/public-cd",
       ok: true,
       status: 204,
@@ -268,7 +268,7 @@ describe("ghcr-webhook-router", () => {
       body: body1,
     });
     expect(res1.status).toBe(200);
-    const data1 = await res1.json();
+    const data1 = (await res1.json()) as RouterResult;
     expect(data1.dispatched).toBe(true);
 
     // Second tag within debounce window: debounced!
@@ -282,7 +282,7 @@ describe("ghcr-webhook-router", () => {
       body: body2,
     });
     expect(res2.status).toBe(200);
-    const data2 = await res2.json();
+    const data2 = (await res2.json()) as RouterResult;
     expect(data2.dispatched).toBe(false);
     expect(data2.message).toContain("Debounced duplicate dispatch");
 

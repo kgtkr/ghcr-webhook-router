@@ -46,8 +46,8 @@ export const envParser = EVP.object({
   GITHUB_TOKEN: EVP.string().secret().optional().description("GitHub personal access token"),
   GITHUB_APP_ID: EVP.string().optional().description("GitHub App ID"),
   GITHUB_APP_PRIVATE_KEY: EVP.string()
-    .secret()
     .map((k) => (k ? parsePrivateKey(k) : undefined))
+    .secret()
     .optional()
     .description("GitHub App private key (PEM or base64)"),
   TAG_INCLUDE_REGEX: EVP.string()

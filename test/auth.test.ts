@@ -7,7 +7,7 @@ import {
   resolveAuthToken,
   clearTokenCache,
 } from "../src/auth.ts";
-import { parsePrivateKey, type AppConfig } from "../src/config.ts";
+import { parsePrivateKey, envParser, type AppConfig } from "../src/config.ts";
 
 describe("auth", () => {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
@@ -142,6 +142,13 @@ describe("auth", () => {
 
       const token = await resolveAuthToken(config, "kgtkr/public-cd");
       expect(token).toBe("pat-token");
+    });
+  });
+
+  describe("config masking", () => {
+    it("marks GITHUB_APP_PRIVATE_KEY as secret in evp parser", () => {
+      const v = envParser.fields.GITHUB_APP_PRIVATE_KEY as { isSecret?: boolean };
+      expect(v.isSecret).toBe(true);
     });
   });
 });
