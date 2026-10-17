@@ -13,11 +13,14 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",
+    "@octokit/webhooks-methods": "^6.0.0",
     "evp-ts": "^1.1.1",
-    "hono": "^4.13.13"
+    "hono": "^4.13.13",
+    "octokit": "^5.0.5"
   },
   "devDependencies": {
     "@hono/vite-dev-server": "^0.26.1",
+    "@octokit/openapi-webhooks-types": "^12.2.0",
     "@types/node": "^26.6.5",
     "typescript": "~6.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@1.3.0",

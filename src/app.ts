@@ -1,10 +1,14 @@
 import { Hono } from "hono";
 import type { AppConfig } from "./config.ts";
-import { verifyWebhookSignature } from "./auth.ts";
-import { processWebhook, type PackageWebhookPayload } from "./router.ts";
+import { verifyWebhookSignature, createGitHubClient, type GitHubClient } from "./auth.ts";
+import { processWebhook, type WebhookPayload } from "./router.ts";
 
-export function createApp(config: AppConfig, fetchFn: typeof fetch = fetch): Hono {
+export function createApp(config: AppConfig, clientOrFetch?: GitHubClient | typeof fetch): Hono {
   const app = new Hono();
+  const client: GitHubClient =
+    clientOrFetch && typeof clientOrFetch === "object" && "dispatch" in clientOrFetch
+      ? clientOrFetch
+      : createGitHubClient(config, typeof clientOrFetch === "function" ? clientOrFetch : undefined);
 
   app.get("/healthz", (c) => c.text("OK"));
 
@@ -13,20 +17,21 @@ export function createApp(config: AppConfig, fetchFn: typeof fetch = fetch): Hon
     const eventHeader = c.req.header("x-github-event");
     const rawBody = await c.req.text();
 
-    if (!verifyWebhookSignature(rawBody, signature, config.WEBHOOK_SECRET)) {
+    const isValid = await verifyWebhookSignature(rawBody, signature, config.WEBHOOK_SECRET);
+    if (!isValid) {
       console.warn(`[webhook] Invalid signature (event=${eventHeader ?? "unknown"})`);
       return c.json({ error: "Invalid signature" }, 401);
     }
 
-    let payload: PackageWebhookPayload;
+    let payload: WebhookPayload;
     try {
-      payload = JSON.parse(rawBody) as PackageWebhookPayload;
+      payload = JSON.parse(rawBody) as WebhookPayload;
     } catch {
       console.warn(`[webhook] Invalid JSON payload (event=${eventHeader ?? "unknown"})`);
       return c.json({ error: "Invalid JSON payload" }, 400);
     }
 
-    const result = await processWebhook(eventHeader, payload, config, fetchFn);
+    const result = await processWebhook(eventHeader, payload, config, client);
 
     const hasErrors = result.targets?.some((t) => !t.ok);
     if (hasErrors) {

@@ -1,15 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
-import crypto from "node:crypto";
+import { sign } from "@octokit/webhooks-methods";
 import { createApp } from "../src/app.ts";
 import type { AppConfig } from "../src/config.ts";
 import { clearDebounceCache, type RouterResult } from "../src/router.ts";
-import { clearTokenCache } from "../src/auth.ts";
-
-function sign(body: string, secret: string): string {
-  const hmac = crypto.createHmac("sha256", secret);
-  hmac.update(body);
-  return `sha256=${hmac.digest("hex")}`;
-}
 
 describe("ghcr-webhook-router", () => {
   const secret = "test-secret-1234";
@@ -25,7 +18,6 @@ describe("ghcr-webhook-router", () => {
 
   beforeEach(() => {
     clearDebounceCache();
-    clearTokenCache();
     vi.restoreAllMocks();
   });
 
@@ -57,7 +49,7 @@ describe("ghcr-webhook-router", () => {
   it("handles ping event with pong", async () => {
     const app = createApp(baseConfig);
     const body = JSON.stringify({ zen: "Responsive is better than fast." });
-    const signature = sign(body, secret);
+    const signature = await sign(secret, body);
 
     const res = await app.request("/webhook", {
       method: "POST",
@@ -83,7 +75,7 @@ describe("ghcr-webhook-router", () => {
         owner: { login: "kgtkr" },
       },
     });
-    const signature = sign(body, secret);
+    const signature = await sign(secret, body);
 
     const res = await app.request("/webhook", {
       method: "POST",
@@ -114,7 +106,7 @@ describe("ghcr-webhook-router", () => {
         },
       },
     });
-    const signature = sign(body, secret);
+    const signature = await sign(secret, body);
 
     const res = await app.request("/webhook", {
       method: "POST",
@@ -147,7 +139,7 @@ describe("ghcr-webhook-router", () => {
         },
       },
     });
-    const signature = sign(body, secret);
+    const signature = await sign(secret, body);
 
     const res = await app.request("/webhook", {
       method: "POST",
@@ -165,11 +157,7 @@ describe("ghcr-webhook-router", () => {
   });
 
   it("dispatches successfully to TARGET_REPOS for valid container tag", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 204,
-      text: async () => "",
-    });
+    const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
     const app = createApp(baseConfig, mockFetch as unknown as typeof fetch);
     const body = JSON.stringify({
@@ -186,7 +174,7 @@ describe("ghcr-webhook-router", () => {
         },
       },
     });
-    const signature = sign(body, secret);
+    const signature = await sign(secret, body);
 
     const res = await app.request("/webhook", {
       method: "POST",
@@ -215,8 +203,8 @@ describe("ghcr-webhook-router", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          Authorization: "Bearer mock-token-xyz",
-          Accept: "application/vnd.github+json",
+          authorization: "token mock-token-xyz",
+          accept: "application/vnd.github.v3+json",
         }),
         body: JSON.stringify({
           event_type: "ghcr_package_published",
@@ -234,11 +222,7 @@ describe("ghcr-webhook-router", () => {
   });
 
   it("debounces rapid duplicate pushes for the same image", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 204,
-      text: async () => "",
-    });
+    const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
     const app = createApp(baseConfig, mockFetch as unknown as typeof fetch);
 
@@ -262,7 +246,7 @@ describe("ghcr-webhook-router", () => {
     const res1 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": sign(body1, secret),
+        "x-hub-signature-256": await sign(secret, body1),
         "x-github-event": "package",
       },
       body: body1,
@@ -276,7 +260,7 @@ describe("ghcr-webhook-router", () => {
     const res2 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": sign(body2, secret),
+        "x-hub-signature-256": await sign(secret, body2),
         "x-github-event": "package",
       },
       body: body2,
@@ -291,11 +275,7 @@ describe("ghcr-webhook-router", () => {
   });
 
   it("ignores latest-master and dispatches timestamped tag when TAG_INCLUDE_REGEX is set", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 204,
-      text: async () => "",
-    });
+    const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
     const configWithInclude: AppConfig = {
       ...baseConfig,
@@ -323,7 +303,7 @@ describe("ghcr-webhook-router", () => {
     const res1 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": sign(body1, secret),
+        "x-hub-signature-256": await sign(secret, body1),
         "x-github-event": "package",
       },
       body: body1,
@@ -338,7 +318,7 @@ describe("ghcr-webhook-router", () => {
     const res2 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": sign(body2, secret),
+        "x-hub-signature-256": await sign(secret, body2),
         "x-github-event": "package",
       },
       body: body2,
@@ -352,16 +332,13 @@ describe("ghcr-webhook-router", () => {
   it("does not debounce subsequent attempts when dispatch fails", async () => {
     const mockFetch = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => "Internal Server Error",
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        text: async () => "",
-      });
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
     const app = createApp(baseConfig, mockFetch as unknown as typeof fetch);
     const body = JSON.stringify({
@@ -377,12 +354,11 @@ describe("ghcr-webhook-router", () => {
         },
       },
     });
-    const signature = sign(body, secret);
 
     const res1 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": signature,
+        "x-hub-signature-256": await sign(secret, body),
         "x-github-event": "package",
       },
       body,
@@ -392,7 +368,7 @@ describe("ghcr-webhook-router", () => {
     const res2 = await app.request("/webhook", {
       method: "POST",
       headers: {
-        "x-hub-signature-256": signature,
+        "x-hub-signature-256": await sign(secret, body),
         "x-github-event": "package",
       },
       body,

@@ -1,24 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import crypto from "node:crypto";
-import {
-  generateAppJwt,
-  getInstallationToken,
-  getInstallationTokenForRepo,
-  resolveAuthToken,
-  clearTokenCache,
-} from "../src/auth.ts";
+import { sign } from "@octokit/webhooks-methods";
+import { verifyWebhookSignature, createGitHubClient } from "../src/auth.ts";
 import { parsePrivateKey, envParser, type AppConfig } from "../src/config.ts";
 
 describe("auth", () => {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+  const { privateKey } = crypto.generateKeyPairSync("rsa", {
     modulusLength: 2048,
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-
-  beforeEach(() => {
-    clearTokenCache();
-    vi.restoreAllMocks();
   });
 
   describe("parsePrivateKey", () => {
@@ -37,93 +27,108 @@ describe("auth", () => {
     });
   });
 
-  describe("generateAppJwt", () => {
-    it("generates a valid RS256 JWT verifiable with public key", () => {
-      const jwt = generateAppJwt("app-12345", privateKey);
-      const parts = jwt.split(".");
-      expect(parts).toHaveLength(3);
+  describe("verifyWebhookSignature", () => {
+    const secret = "test-secret-456";
 
-      const header = JSON.parse(Buffer.from(parts[0], "base64url").toString());
-      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    it("verifies valid signature correctly", async () => {
+      const payload = JSON.stringify({ hello: "world" });
+      const signature = await sign(secret, payload);
 
-      expect(header).toEqual({ alg: "RS256", typ: "JWT" });
-      expect(payload.iss).toBe("app-12345");
-      expect(payload.exp - payload.iat).toBe(660);
+      const isValid = await verifyWebhookSignature(payload, signature, secret);
+      expect(isValid).toBe(true);
+    });
 
-      const verifier = crypto.createVerify("RSA-SHA256");
-      verifier.update(`${parts[0]}.${parts[1]}`);
-      const valid = verifier.verify(publicKey, parts[2], "base64url");
-      expect(valid).toBe(true);
+    it("rejects invalid signature", async () => {
+      const payload = JSON.stringify({ hello: "world" });
+      const isValid = await verifyWebhookSignature(payload, "sha256=invalid-signature", secret);
+      expect(isValid).toBe(false);
+    });
+
+    it("rejects missing signature", async () => {
+      const payload = JSON.stringify({ hello: "world" });
+      const isValid = await verifyWebhookSignature(payload, undefined, secret);
+      expect(isValid).toBe(false);
     });
   });
 
-  describe("getInstallationToken", () => {
-    it("fetches and caches installation token", async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 201,
-        json: async () => ({
-          token: "ghs_test_installation_token",
-          expires_at: new Date(Date.now() + 3600_000).toISOString(),
-        }),
+  describe("createGitHubClient with GITHUB_TOKEN", () => {
+    it("dispatches event using Octokit with PAT", async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      const config: AppConfig = {
+        PORT: 3000,
+        WEBHOOK_SECRET: "sec",
+        TARGET_REPOS: ["kgtkr/public-cd"],
+        DISPATCH_EVENT_TYPE: "ghcr_package_published",
+        GITHUB_TOKEN: "pat-token-xyz",
+        TAG_EXCLUDE_REGEX: /$/,
+        DEBOUNCE_MS: 5000,
+      };
+
+      const client = createGitHubClient(config, mockFetch as unknown as typeof fetch);
+      const res = await client.dispatch("kgtkr/public-cd", "ghcr_package_published", {
+        foo: "bar",
       });
 
-      const token1 = await getInstallationToken(
-        "app-123",
-        privateKey,
-        42,
-        mockFetch as unknown as typeof fetch,
+      expect(res.ok).toBe(true);
+      expect(res.status).toBe(204);
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.github.com/repos/kgtkr/public-cd/dispatches",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            authorization: "token pat-token-xyz",
+          }),
+        }),
       );
-      expect(token1).toBe("ghs_test_installation_token");
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-
-      // Cached call
-      const token2 = await getInstallationToken(
-        "app-123",
-        privateKey,
-        42,
-        mockFetch as unknown as typeof fetch,
-      );
-      expect(token2).toBe("ghs_test_installation_token");
-      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe("getInstallationTokenForRepo", () => {
-    it("looks up installation ID for repo, caches installation ID, and respects token expiry", async () => {
+  describe("createGitHubClient with GitHub App", () => {
+    it("resolves repo installation ID and dispatches via installation token", async () => {
       const mockFetch = vi
         .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({ id: 999 }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          json: async () => ({
-            token: "ghs_short_lived_token",
-            // Expires in 30s (within the 60s refresh buffer, so next call must refresh token)
-            expires_at: new Date(Date.now() + 30_000).toISOString(),
+        // 1. App JWT request to get repo installation
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 888 }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
           }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          json: async () => ({
-            token: "ghs_refreshed_token",
-            expires_at: new Date(Date.now() + 3600_000).toISOString(),
-          }),
-        });
+        )
+        // 2. Installation token creation request
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              token: "ghs_app_installation_token",
+              expires_at: new Date(Date.now() + 3600_000).toISOString(),
+            }),
+            {
+              status: 201,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+        )
+        // 3. Dispatch event request
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-      const token1 = await getInstallationTokenForRepo(
-        "app-123",
-        privateKey,
-        "kgtkr/public-cd",
-        mockFetch as unknown as typeof fetch,
-      );
+      const config: AppConfig = {
+        PORT: 3000,
+        WEBHOOK_SECRET: "sec",
+        TARGET_REPOS: ["kgtkr/public-cd"],
+        DISPATCH_EVENT_TYPE: "ghcr_package_published",
+        GITHUB_APP_ID: "app-1234",
+        GITHUB_APP_PRIVATE_KEY: privateKey,
+        TAG_EXCLUDE_REGEX: /$/,
+        DEBOUNCE_MS: 5000,
+      };
 
-      expect(token1).toBe("ghs_short_lived_token");
+      const client = createGitHubClient(config, mockFetch as unknown as typeof fetch);
+      const res = await client.dispatch("kgtkr/public-cd", "ghcr_package_published", {
+        foo: "bar",
+      });
+
+      expect(res.ok).toBe(true);
+      expect(res.status).toBe(204);
       expect(mockFetch).toHaveBeenNthCalledWith(
         1,
         "https://api.github.com/repos/kgtkr/public-cd/installation",
@@ -131,41 +136,19 @@ describe("auth", () => {
       );
       expect(mockFetch).toHaveBeenNthCalledWith(
         2,
-        "https://api.github.com/app/installations/999/access_tokens",
+        "https://api.github.com/app/installations/888/access_tokens",
         expect.any(Object),
       );
-
-      // Second call: installation ID is cached, but short-lived token is refreshed
-      const token2 = await getInstallationTokenForRepo(
-        "app-123",
-        privateKey,
-        "kgtkr/public-cd",
-        mockFetch as unknown as typeof fetch,
-      );
-      expect(token2).toBe("ghs_refreshed_token");
-      expect(mockFetch).toHaveBeenCalledTimes(3);
       expect(mockFetch).toHaveBeenNthCalledWith(
         3,
-        "https://api.github.com/app/installations/999/access_tokens",
-        expect.any(Object),
+        "https://api.github.com/repos/kgtkr/public-cd/dispatches",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            authorization: "token ghs_app_installation_token",
+          }),
+        }),
       );
-    });
-  });
-
-  describe("resolveAuthToken", () => {
-    it("uses GITHUB_TOKEN when present", async () => {
-      const config: AppConfig = {
-        PORT: 3000,
-        WEBHOOK_SECRET: "sec",
-        TARGET_REPOS: ["kgtkr/public-cd"],
-        DISPATCH_EVENT_TYPE: "ghcr_package_published",
-        GITHUB_TOKEN: "pat-token",
-        TAG_EXCLUDE_REGEX: /$/,
-        DEBOUNCE_MS: 5000,
-      };
-
-      const token = await resolveAuthToken(config, "kgtkr/public-cd");
-      expect(token).toBe("pat-token");
     });
   });
 

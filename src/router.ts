@@ -1,35 +1,27 @@
+import type { components } from "@octokit/openapi-webhooks-types";
 import type { AppConfig } from "./config.ts";
-import { resolveAuthToken } from "./auth.ts";
+import { createGitHubClient, type GitHubClient, type DispatchTargetResult } from "./auth.ts";
 
-export interface PackageWebhookPayload {
-  action: string;
-  package?: {
-    name: string;
-    package_type: string;
-    owner: {
-      login: string;
-    };
-    package_version?: {
-      version?: string;
-      container_metadata?: {
-        tag?: {
-          name?: string;
-          digest?: string;
-        };
-      };
-    };
-  };
-  installation?: {
-    id: number;
-  };
-}
+export type PackagePublishedPayload = components["schemas"]["webhook-package-published"];
+export type RegistryPackagePublishedPayload =
+  components["schemas"]["webhook-registry-package-published"];
+
+export type WebhookPayload = {
+  action?: string;
+  package?: PackagePublishedPayload["package"];
+  registry_package?: RegistryPackagePublishedPayload["registry_package"];
+  installation?: { id: number };
+  [key: string]: unknown;
+};
+
+export type PackageWebhookPayload = WebhookPayload;
 
 export interface RouterResult {
   dispatched: boolean;
   message: string;
   image?: string;
   tag?: string;
-  targets?: Array<{ repo: string; ok: boolean; status: number; error?: string }>;
+  targets?: DispatchTargetResult[];
 }
 
 const lastDispatched = new Map<string, number>();
@@ -52,9 +44,9 @@ function pruneDebounceCache(now: number, maxAgeMs: number): void {
 
 export async function processWebhook(
   eventHeader: string | undefined,
-  payload: PackageWebhookPayload,
+  payload: WebhookPayload,
   config: AppConfig,
-  fetchFn: typeof fetch = fetch,
+  clientOrFetch?: GitHubClient | typeof fetch,
 ): Promise<RouterResult> {
   if (eventHeader === "ping") {
     return { dispatched: false, message: "Pong" };
@@ -68,20 +60,25 @@ export async function processWebhook(
     return { dispatched: false, message: `Ignored action: ${payload.action}` };
   }
 
-  if (payload.package?.package_type !== "container") {
+  const pkg = payload.package ?? payload.registry_package;
+  if (!pkg) {
+    return { dispatched: false, message: "Missing package payload" };
+  }
+
+  if (pkg.package_type !== "container") {
     return {
       dispatched: false,
-      message: `Ignored package_type: ${payload.package?.package_type}`,
+      message: `Ignored package_type: ${pkg.package_type}`,
     };
   }
 
-  const tag = payload.package.package_version?.container_metadata?.tag?.name;
+  const tag = pkg.package_version?.container_metadata?.tag?.name;
   if (!tag) {
     return { dispatched: false, message: "Untagged manifest, ignored" };
   }
 
-  const pkgOwner = payload.package.owner?.login;
-  const pkgName = payload.package.name;
+  const pkgOwner = pkg.owner?.login;
+  const pkgName = pkg.name;
   if (!pkgOwner || !pkgName) {
     return { dispatched: false, message: "Missing package owner or name" };
   }
@@ -140,45 +137,18 @@ export async function processWebhook(
     package: pkgName,
     image,
     tag,
-    digest:
-      payload.package.package_version?.container_metadata?.tag?.digest ||
-      payload.package.package_version?.version,
+    digest: pkg.package_version?.container_metadata?.tag?.digest || pkg.package_version?.version,
   };
+
+  const client: GitHubClient =
+    clientOrFetch && typeof clientOrFetch === "object" && "dispatch" in clientOrFetch
+      ? clientOrFetch
+      : createGitHubClient(config, typeof clientOrFetch === "function" ? clientOrFetch : undefined);
 
   try {
     const targets = await Promise.all(
       config.TARGET_REPOS.map(async (targetRepo) => {
-        try {
-          const token = await resolveAuthToken(config, targetRepo, fetchFn);
-
-          const res = await fetchFn(`https://api.github.com/repos/${targetRepo}/dispatches`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/vnd.github+json",
-              "User-Agent": "ghcr-webhook-router",
-            },
-            body: JSON.stringify({
-              event_type: config.DISPATCH_EVENT_TYPE,
-              client_payload: clientPayload,
-            }),
-          });
-
-          if (!res.ok) {
-            const errText = await res.text();
-            return {
-              repo: targetRepo,
-              ok: false,
-              status: res.status,
-              error: errText,
-            };
-          }
-
-          return { repo: targetRepo, ok: true, status: res.status };
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          return { repo: targetRepo, ok: false, status: 500, error: message };
-        }
+        return await client.dispatch(targetRepo, config.DISPATCH_EVENT_TYPE, clientPayload);
       }),
     );
 
