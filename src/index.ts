@@ -6,7 +6,7 @@ export const config = loadConfig();
 export const app = createApp(config);
 
 if (process.env.NODE_ENV !== "test") {
-  serve(
+  const server = serve(
     {
       fetch: app.fetch,
       port: config.PORT,
@@ -15,4 +15,14 @@ if (process.env.NODE_ENV !== "test") {
       console.log(`ghcr-webhook-router running at http://localhost:${info.port}`);
     },
   );
+
+  const shutdown = (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }

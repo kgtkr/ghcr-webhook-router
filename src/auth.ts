@@ -45,10 +45,12 @@ interface TokenCache {
   expiresAt: number;
 }
 
-const tokenCache = new Map<string | number, TokenCache>();
+const tokenCache = new Map<number, TokenCache>();
+const repoInstallationCache = new Map<string, number>();
 
 export function clearTokenCache(): void {
   tokenCache.clear();
+  repoInstallationCache.clear();
 }
 
 export async function getInstallationToken(
@@ -94,37 +96,41 @@ export async function getInstallationTokenForRepo(
   repoFullName: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<string> {
-  const cached = tokenCache.get(repoFullName);
-  if (cached && cached.expiresAt > Date.now() + 60_000) {
-    return cached.token;
+  let installationId = repoInstallationCache.get(repoFullName);
+
+  if (installationId === undefined) {
+    const jwt = generateAppJwt(appId, privateKeyPem);
+    const res = await fetchFn(`https://api.github.com/repos/${repoFullName}/installation`, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "ghcr-webhook-router",
+      },
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(
+        `Failed to find installation for repo ${repoFullName} (${res.status}): ${errorText}`,
+      );
+    }
+
+    const data = (await res.json()) as { id: number };
+    installationId = data.id;
+    repoInstallationCache.set(repoFullName, installationId);
   }
 
-  const jwt = generateAppJwt(appId, privateKeyPem);
-  const res = await fetchFn(`https://api.github.com/repos/${repoFullName}/installation`, {
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "ghcr-webhook-router",
-    },
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(
-      `Failed to find installation for repo ${repoFullName} (${res.status}): ${errorText}`,
-    );
+  try {
+    return await getInstallationToken(appId, privateKeyPem, installationId, fetchFn);
+  } catch (err) {
+    repoInstallationCache.delete(repoFullName);
+    throw err;
   }
-
-  const data = (await res.json()) as { id: number };
-  const token = await getInstallationToken(appId, privateKeyPem, data.id, fetchFn);
-  tokenCache.set(repoFullName, { token, expiresAt: Date.now() + 3500_000 });
-  return token;
 }
 
 export async function resolveAuthToken(
   config: AppConfig,
   targetRepo: string,
-  installationId?: number,
   fetchFn: typeof fetch = fetch,
 ): Promise<string> {
   if (config.GITHUB_TOKEN) {
@@ -132,21 +138,6 @@ export async function resolveAuthToken(
   }
 
   if (config.GITHUB_APP_ID && config.GITHUB_APP_PRIVATE_KEY) {
-    if (installationId) {
-      try {
-        return await getInstallationToken(
-          config.GITHUB_APP_ID,
-          config.GITHUB_APP_PRIVATE_KEY,
-          installationId,
-          fetchFn,
-        );
-      } catch (err) {
-        console.warn(
-          `Failed to get token for payload installation ${installationId}, falling back to repo lookup:`,
-          err,
-        );
-      }
-    }
     return await getInstallationTokenForRepo(
       config.GITHUB_APP_ID,
       config.GITHUB_APP_PRIVATE_KEY,

@@ -33,9 +33,11 @@ export interface RouterResult {
 }
 
 const lastDispatched = new Map<string, number>();
+const inFlightDispatches = new Set<string>();
 
 export function clearDebounceCache(): void {
   lastDispatched.clear();
+  inFlightDispatches.clear();
 }
 
 function pruneDebounceCache(now: number, maxAgeMs: number): void {
@@ -116,9 +118,12 @@ export async function processWebhook(
   const now = Date.now();
   pruneDebounceCache(now, Math.max(config.DEBOUNCE_MS * 10, 60_000));
 
-  const debounceKey = `${image}`;
+  const debounceKey = image;
   const lastTime = lastDispatched.get(debounceKey);
-  if (lastTime !== undefined && now - lastTime < config.DEBOUNCE_MS) {
+  if (
+    inFlightDispatches.has(debounceKey) ||
+    (lastTime !== undefined && now - lastTime < config.DEBOUNCE_MS)
+  ) {
     return {
       dispatched: false,
       message: `Debounced duplicate dispatch for ${image} (within ${config.DEBOUNCE_MS}ms)`,
@@ -126,7 +131,8 @@ export async function processWebhook(
       tag,
     };
   }
-  lastDispatched.set(debounceKey, now);
+
+  inFlightDispatches.add(debounceKey);
 
   const clientPayload = {
     registry: "ghcr.io",
@@ -139,48 +145,56 @@ export async function processWebhook(
       payload.package.package_version?.version,
   };
 
-  const targets = await Promise.all(
-    config.TARGET_REPOS.map(async (targetRepo) => {
-      try {
-        const token = await resolveAuthToken(config, targetRepo, payload.installation?.id, fetchFn);
+  try {
+    const targets = await Promise.all(
+      config.TARGET_REPOS.map(async (targetRepo) => {
+        try {
+          const token = await resolveAuthToken(config, targetRepo, fetchFn);
 
-        const res = await fetchFn(`https://api.github.com/repos/${targetRepo}/dispatches`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "ghcr-webhook-router",
-          },
-          body: JSON.stringify({
-            event_type: config.DISPATCH_EVENT_TYPE,
-            client_payload: clientPayload,
-          }),
-        });
+          const res = await fetchFn(`https://api.github.com/repos/${targetRepo}/dispatches`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "ghcr-webhook-router",
+            },
+            body: JSON.stringify({
+              event_type: config.DISPATCH_EVENT_TYPE,
+              client_payload: clientPayload,
+            }),
+          });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          return {
-            repo: targetRepo,
-            ok: false,
-            status: res.status,
-            error: errText,
-          };
+          if (!res.ok) {
+            const errText = await res.text();
+            return {
+              repo: targetRepo,
+              ok: false,
+              status: res.status,
+              error: errText,
+            };
+          }
+
+          return { repo: targetRepo, ok: true, status: res.status };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { repo: targetRepo, ok: false, status: 500, error: message };
         }
+      }),
+    );
 
-        return { repo: targetRepo, ok: true, status: res.status };
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { repo: targetRepo, ok: false, status: 500, error: message };
-      }
-    }),
-  );
+    const anyFailed = targets.some((t) => !t.ok);
+    if (!anyFailed) {
+      lastDispatched.set(debounceKey, Date.now());
+    }
 
-  const anyFailed = targets.some((t) => !t.ok);
-  return {
-    dispatched: !anyFailed,
-    message: anyFailed ? "Some dispatches failed" : "Dispatched successfully",
-    image,
-    tag,
-    targets,
-  };
+    return {
+      dispatched: !anyFailed,
+      message: anyFailed ? "Some dispatches failed" : "Dispatched successfully",
+      image,
+      tag,
+      targets,
+    };
+  } finally {
+    inFlightDispatches.delete(debounceKey);
+  }
 }

@@ -17,7 +17,7 @@ All configuration is injected via environment variables (parsed by [`evp-ts`](ht
 | `GITHUB_APP_ID`          |    *1    | -                        | GitHub App ID                                                                                                |
 | `GITHUB_APP_PRIVATE_KEY` |    *1    | -                        | GitHub App private key (PEM format or base64-encoded string)                                                 |
 | `GITHUB_TOKEN`           |    *1    | -                        | Personal Access Token (when not using a GitHub App)                                                          |
-| `TAG_INCLUDE_REGEX`      |    -     | `undefined`              | Regular expression for tags to process                                                                       |
+| `TAG_INCLUDE_REGEX`      |    -     | `undefined`              | Regular expression for tags to process (e.g., `^\d{17}-[0-9a-f]{7}(-.*)?$`)                                  |
 | `TAG_EXCLUDE_REGEX`      |    -     | `-(amd64\|arm64)$`       | Regular expression for tags to exclude                                                                       |
 | `PACKAGE_INCLUDE_REGEX`  |    -     | `undefined`              | Regular expression for image names to process (e.g., `^ghcr\.io/kgtkr/.*`)                                   |
 | `DEBOUNCE_MS`            |    -     | `5000`                   | Debounce window in milliseconds to suppress rapid consecutive webhooks for the same image                    |
@@ -89,14 +89,14 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
         env:
-          REPOSITORIES: ${{ github.repository }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_FORCE: >-
             {
               "dependencyDashboard": false,
               "branchPrefix": "renovate-dispatch/${{ github.event.client_payload.package }}/",
               "packageRules": [
                 {
-                  "matchPackagePatterns": ["*"],
+                  "matchPackageNames": ["*"],
                   "enabled": false
                 },
                 {

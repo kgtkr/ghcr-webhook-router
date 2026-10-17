@@ -289,4 +289,117 @@ describe("ghcr-webhook-router", () => {
     // Only 1 fetch call should have occurred
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores latest-master and dispatches timestamped tag when TAG_INCLUDE_REGEX is set", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      text: async () => "",
+    });
+
+    const configWithInclude: AppConfig = {
+      ...baseConfig,
+      TAG_INCLUDE_REGEX: /^\d{17}-[0-9a-f]{7}(-.*)?$/,
+    };
+    const app = createApp(configWithInclude, mockFetch as unknown as typeof fetch);
+
+    const createPayload = (tag: string) =>
+      JSON.stringify({
+        action: "published",
+        package: {
+          name: "kgtkr.net",
+          package_type: "container",
+          owner: { login: "kgtkr" },
+          package_version: {
+            container_metadata: {
+              tag: { name: tag },
+            },
+          },
+        },
+      });
+
+    // 1. latest-master arrives first -> ignored by TAG_INCLUDE_REGEX (does not consume debounce!)
+    const body1 = createPayload("latest-master");
+    const res1 = await app.request("/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": sign(body1, secret),
+        "x-github-event": "package",
+      },
+      body: body1,
+    });
+    expect(res1.status).toBe(200);
+    const data1 = (await res1.json()) as RouterResult;
+    expect(data1.dispatched).toBe(false);
+    expect(data1.message).toContain("TAG_INCLUDE_REGEX");
+
+    // 2. timestamped tag arrives immediately after -> dispatches!
+    const body2 = createPayload("20261017150000000-abcdef1-master");
+    const res2 = await app.request("/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": sign(body2, secret),
+        "x-github-event": "package",
+      },
+      body: body2,
+    });
+    expect(res2.status).toBe(200);
+    const data2 = (await res2.json()) as RouterResult;
+    expect(data2.dispatched).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not debounce subsequent attempts when dispatch fails", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => "Internal Server Error",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+        text: async () => "",
+      });
+
+    const app = createApp(baseConfig, mockFetch as unknown as typeof fetch);
+    const body = JSON.stringify({
+      action: "published",
+      package: {
+        name: "kgtkr.net",
+        package_type: "container",
+        owner: { login: "kgtkr" },
+        package_version: {
+          container_metadata: {
+            tag: { name: "20261017150000000-abcdef1-master" },
+          },
+        },
+      },
+    });
+    const signature = sign(body, secret);
+
+    const res1 = await app.request("/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "package",
+      },
+      body,
+    });
+    expect(res1.status).toBe(502);
+
+    const res2 = await app.request("/webhook", {
+      method: "POST",
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "package",
+      },
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const data2 = (await res2.json()) as RouterResult;
+    expect(data2.dispatched).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
 });

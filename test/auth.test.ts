@@ -90,7 +90,7 @@ describe("auth", () => {
   });
 
   describe("getInstallationTokenForRepo", () => {
-    it("looks up installation ID for repo and fetches token", async () => {
+    it("looks up installation ID for repo, caches installation ID, and respects token expiry", async () => {
       const mockFetch = vi
         .fn()
         .mockResolvedValueOnce({
@@ -102,19 +102,28 @@ describe("auth", () => {
           ok: true,
           status: 201,
           json: async () => ({
-            token: "ghs_repo_installation_token",
+            token: "ghs_short_lived_token",
+            // Expires in 30s (within the 60s refresh buffer, so next call must refresh token)
+            expires_at: new Date(Date.now() + 30_000).toISOString(),
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 201,
+          json: async () => ({
+            token: "ghs_refreshed_token",
             expires_at: new Date(Date.now() + 3600_000).toISOString(),
           }),
         });
 
-      const token = await getInstallationTokenForRepo(
+      const token1 = await getInstallationTokenForRepo(
         "app-123",
         privateKey,
         "kgtkr/public-cd",
         mockFetch as unknown as typeof fetch,
       );
 
-      expect(token).toBe("ghs_repo_installation_token");
+      expect(token1).toBe("ghs_short_lived_token");
       expect(mockFetch).toHaveBeenNthCalledWith(
         1,
         "https://api.github.com/repos/kgtkr/public-cd/installation",
@@ -122,6 +131,21 @@ describe("auth", () => {
       );
       expect(mockFetch).toHaveBeenNthCalledWith(
         2,
+        "https://api.github.com/app/installations/999/access_tokens",
+        expect.any(Object),
+      );
+
+      // Second call: installation ID is cached, but short-lived token is refreshed
+      const token2 = await getInstallationTokenForRepo(
+        "app-123",
+        privateKey,
+        "kgtkr/public-cd",
+        mockFetch as unknown as typeof fetch,
+      );
+      expect(token2).toBe("ghs_refreshed_token");
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        3,
         "https://api.github.com/app/installations/999/access_tokens",
         expect.any(Object),
       );
