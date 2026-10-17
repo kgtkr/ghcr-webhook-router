@@ -3,7 +3,7 @@ FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY tsconfig.json vite.config.ts ./
 COPY src ./src
