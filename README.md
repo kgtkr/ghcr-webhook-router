@@ -93,18 +93,19 @@ jobs:
           RENOVATE_FORCE: >-
             {
               "dependencyDashboard": false,
-              "branchPrefix": "renovate-dispatch/${{ github.event.client_payload.package }}/",
-              "packageRules": [
-                {
-                  "matchPackageNames": ["*"],
-                  "enabled": false
-                },
-                {
-                  "matchPackageNames": ["${{ github.event.client_payload.image }}"],
-                  "enabled": true
-                }
-              ]
+              "branchPrefix": "renovate-dispatch/${{ github.event.client_payload.package }}/"
             }
+          RENOVATE_PACKAGE_RULES: >-
+            [
+              {
+                "matchPackageNames": ["*"],
+                "enabled": false
+              },
+              {
+                "matchPackageNames": ["${{ github.event.client_payload.image }}"],
+                "enabled": true
+              }
+            ]
 ```
 
 ## Development Commands (Vite+)
